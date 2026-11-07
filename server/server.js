@@ -2,9 +2,12 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
+require('dotenv').config();
+require('dotenv').config({ path: path.join(__dirname, '.env') });
+require('dotenv').config({ path: path.join(__dirname, '../.env') });
 const nodemailer = require('nodemailer');
 const db = require('./config/database');
-require('dotenv').config();
 
 const app = express();
 
@@ -35,18 +38,25 @@ app.use('/leave_attachments', express.static(path.join(__dirname, 'leave_attachm
 
 app.locals.db = db;
 
-if (!process.env.EMAIL_USER || !process.env.EMAIL_APP_PASSWORD) {
-  console.error('EMAIL_USER and EMAIL_APP_PASSWORD must be set in environment variables');
-  process.exit(1);
+let transporter = null;
+if (process.env.EMAIL_USER && process.env.EMAIL_APP_PASSWORD) {
+  transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_APP_PASSWORD
+    }
+  });
+  console.log('Email transporter initialized successfully');
+} else {
+  console.warn('⚠️ WARNING: EMAIL_USER and EMAIL_APP_PASSWORD are not fully configured. Email sending will be simulated so server can stay online.');
+  transporter = {
+    sendMail: (options, cb) => {
+      console.warn('⚠️ sendMail simulated (no EMAIL_USER/PASSWORD):', options.to, options.subject);
+      if (typeof cb === 'function') cb(null, { messageId: 'simulated' });
+    }
+  };
 }
-
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_APP_PASSWORD
-  }
-});
 
 app.locals.transporter = transporter;
 
@@ -931,8 +941,12 @@ createCategoriesTable();
 createUOMTable();
 createInventoryTable();
 
-const { createAttendanceTables } = require('./config/attendanceSchema');
-createAttendanceTables(db);
+try {
+  const { createAttendanceTables } = require('./config/attendanceSchema');
+  createAttendanceTables(db);
+} catch (e) {
+  console.warn('⚠️ config/attendanceSchema.js not found, skipping attendance table init.');
+}
 
 app.get('/api', (req, res) => {
   res.json({ message: 'SnapFun ERP API is running' });
@@ -982,20 +996,43 @@ app.use('/api/chatbot', requireAuth, chatbotRoutes);
 const promotionsRoutes = require('./routes/promotions');
 app.use('/api/promotions', requireAuth, promotionsRoutes);
 
-const attendanceRoutes = require('./routes/attendance');
-app.use('/api/attendance', requireAuth, attendanceRoutes);
+try {
+  const attendanceRoutes = require('./routes/attendance');
+  app.use('/api/attendance', requireAuth, attendanceRoutes);
+} catch (e) {
+  console.warn('⚠️ routes/attendance.js not found, skipping attendance route.');
+}
 
-const leavesRoutes = require('./routes/leaves');
-app.use('/api/leaves', requireAuth, leavesRoutes);
+try {
+  const leavesRoutes = require('./routes/leaves');
+  app.use('/api/leaves', requireAuth, leavesRoutes);
+} catch (e) {
+  console.warn('⚠️ routes/leaves.js not found, skipping leaves route.');
+}
 
 // ============================================
 // SERVE FRONTEND (React build) — TAMBAHAN BARU
 // Harus di sini: SETELAH semua route /api/..., SEBELUM error handler
 // ============================================
-app.use(express.static(path.join(__dirname, '../dist')));
+const distPath = path.join(__dirname, '../dist');
+const indexPath = path.join(distPath, 'index.html');
+app.use(express.static(distPath));
 
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../dist/index.html'));
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.status(200).send(`
+      <!DOCTYPE html>
+      <html>
+        <head><title>SnapFun ERP</title></head>
+        <body style="font-family:sans-serif;text-align:center;padding:50px;background:#111;color:#fff;">
+          <h2>SnapFun ERP Backend is running!</h2>
+          <p>Frontend dist directory not found. Please build frontend with <code>npm run build</code>.</p>
+        </body>
+      </html>
+    `);
+  }
 });
 
 // Global error handling middleware
@@ -1021,6 +1058,6 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
 });
